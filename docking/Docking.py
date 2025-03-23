@@ -8,7 +8,8 @@ import os
 import subprocess
 import tempfile
 import numpy as np
-from Bio.PDB import PDBParser, PDBIO, MMCIFParser
+from modeller import environ, automodel, alignment, model, log
+from modeller.automodel import assess
 
 
 class Docking:
@@ -125,11 +126,6 @@ class Docking:
             aln_file.write(aln_content)
             aln_file_path = aln_file.name
 
-        try:
-            from modeller import environ, automodel, alignment, model, log, assess
-        except ImportError:
-            print("Modeller module is not installed or unavailable.")
-            return None
 
         log.none()
         env = environ()

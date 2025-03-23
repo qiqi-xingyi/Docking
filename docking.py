@@ -81,10 +81,11 @@ def batch_docking_for_xyz(chain_dir, ligand_mol2, output_base_dir):
 
 
 if __name__ == "__main__":
+
     # Example usage:
     chain_5_directory = "grouped_result/chain_5/1fkf"  # e.g., "grouped_result/chain_5"
-    ligand_file = "selected/1bai/1bai_ligand.mol2"  # e.g., "selected/1bai/1bai_ligand.mol2"
-    results_directory = "docking_results/chain_5"  # e.g., "docking_results/chain_5"
+    ligand_file = "selected/1fkf/1fkf_ligand.mol2"  # e.g., "selected/1bai/1bai_ligand.mol2"
+    results_directory = "docking_results/chain_5/1fkf"  # e.g., "docking_results/chain_5"
 
     batch_docking_for_xyz(chain_5_directory, ligand_file, results_directory)
 
