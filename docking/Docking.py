@@ -4,54 +4,75 @@
 # @Email : yzhan135@kent.edu
 # @File : Docking.py
 
-import os
-import subprocess
-import tempfile
-import numpy as np
-from modeller import environ, automodel, alignment, model, log
-from modeller.automodel import assess
 
+import os
+import numpy as np
+import shutil
+
+# Modeller相关
+from modeller import environ, log
+from modeller.automodel import automodel, assess
+from modeller import alignment, model
 
 class Docking:
-    def __init__(self, output_dir=None):
-        """
-        Initialize the Docking pipeline.
-        If output_dir is not provided, the system temporary directory is used.
-        """
-        if output_dir is None:
-            self.output_dir = tempfile.gettempdir()
-        else:
-            self.output_dir = output_dir
-            os.makedirs(self.output_dir, exist_ok=True)
+    """
+    使用MODELLER从仅含Cα的xyz文件构建满原子PDB的示例类。
 
-        # Modeling attributes
+    与原先类保持方法和流程一致:
+      1) read_xyz()         # 读取xyz(只含Cα)
+      2) adjust_scale()     # 缩放Cα
+      3) write_ca_pdb()     # 写出仅含Cα的pdb
+      4) prepare_alignment()# 写出alignment文件(模板 + 目标序列)
+      5) generate_full_model() # 执行MODELLER的automodel建模
+
+    最终可以把得到的full_model重命名或复制为 self.full_model_filename。
+    """
+
+    def __init__(self, xyz_file):
+        """
+        参数
+        ----
+        xyz_file : str
+            仅含Cα坐标的xyz文件路径
+        """
+        self.xyz_file = xyz_file
         self.sequence = []
         self.coordinates = []
         self.scaled_coordinates = []
-        self.xyz_file = None
 
-    # ------------------ Modeling Methods ------------------ #
-    def read_xyz(self, xyz_file):
+        # 确定 xyz_file 所在目录，后面写文件都放在同一目录下
+        self.base_dir = os.path.dirname(os.path.abspath(self.xyz_file))
+        print("XYZ base directory:", self.base_dir)
+
+        # 基于 xyz_file 命名一些中间文件
+        self.ca_pdb_filename = os.path.join(self.base_dir, 'ca_model.pdb')  # 只含Cα的 PDB
+        self.alignment_filename = os.path.join(self.base_dir, 'protein.ali')  # alignment 文件
+        self.full_model_filename = os.path.join(self.base_dir, 'full_model.pdb')  # 期望得到的完整PDB
+
+        # 这里根据 xyz_file 的倒数第5个字符来做 chain_id，原先你是这么写的
+        # 若不符合你的命名习惯，可自行修改
+        self.chain_id = self.xyz_file[-5]
+
+    def read_xyz(self):
         """
-        Read an XYZ file (ignoring the first two lines) and store the sequence and coordinates.
+        从 xyz 文件中读取残基的一字母名称与Cα坐标。
+        注意：本方法跳过前两行（通常第一行是原子数，第二行是注释）。
         """
-        self.xyz_file = xyz_file
-        with open(xyz_file, 'r') as f:
-            lines = f.readlines()[2:]
-        for line in lines:
-            parts = line.strip().split()
-            if len(parts) == 4:
-                res_name = parts[0]
-                x, y, z = map(float, parts[1:])
-                self.sequence.append(res_name)
-                self.coordinates.append((x, y, z))
-            else:
-                print(f"Warning: Malformed line skipped: {line.strip()}")
-        return self.sequence, self.coordinates
+        with open(self.xyz_file, 'r') as f:
+            lines = f.readlines()[2:]  # 跳过前两行（有时第一行是原子数，第二行是空行/注释）
+            for line in lines:
+                parts = line.strip().split()
+                if len(parts) == 4:
+                    res_name = parts[0]
+                    x, y, z = map(float, parts[1:])
+                    self.sequence.append(res_name)
+                    self.coordinates.append((x, y, z))
+                else:
+                    print(f"Warning: Line '{line.strip()}' is malformed and will be skipped.")
 
     def adjust_scale(self, target_distance=3.8):
         """
-        Scale coordinates so that the average distance between consecutive residues is target_distance.
+        计算当前Cα的平均相邻距离，并用target_distance(默认3.8Å)做整体缩放。
         """
 
         def calculate_average_distance(coords):
@@ -59,21 +80,28 @@ class Docking:
             for i in range(len(coords) - 1):
                 x1, y1, z1 = coords[i]
                 x2, y2, z2 = coords[i + 1]
-                dist = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2 + (z2 - z1) ** 2)
-                distances.append(dist)
+                distance = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2 + (z2 - z1) ** 2)
+                distances.append(distance)
             return np.mean(distances)
 
-        current_avg = calculate_average_distance(self.coordinates)
-        scale_factor = target_distance / current_avg
-        self.scaled_coordinates = [(x * scale_factor, y * scale_factor, z * scale_factor)
-                                   for x, y, z in self.coordinates]
-        print(f"Scale factor applied: {scale_factor:.4f}")
-        return scale_factor
+        if len(self.coordinates) < 2:
+            print("Not enough residues to compute distances.")
+            self.scaled_coordinates = self.coordinates[:]
+            return
 
-    def generate_ca_pdb_content(self, chain_id='A'):
+        current_avg_distance = calculate_average_distance(self.coordinates)
+        scale_factor = target_distance / current_avg_distance
+        self.scaled_coordinates = [
+            (x * scale_factor, y * scale_factor, z * scale_factor)
+            for x, y, z in self.coordinates
+        ]
+        print(f"Scale factor applied: {scale_factor:.4f}")
+
+    def write_ca_pdb(self):
         """
-        Generate the CA model content in PDB format as a string.
+        将缩放后的Cα坐标写成一个仅含Cα的PDB文件(ATOM行)。
         """
+        # 一字母 -> 三字母映射
         res_name_map = {
             'A': 'ALA', 'R': 'ARG', 'N': 'ASN', 'D': 'ASP',
             'C': 'CYS', 'Q': 'GLN', 'E': 'GLU', 'G': 'GLY',
@@ -81,290 +109,133 @@ class Docking:
             'M': 'MET', 'F': 'PHE', 'P': 'PRO', 'S': 'SER',
             'T': 'THR', 'W': 'TRP', 'Y': 'TYR', 'V': 'VAL'
         }
-        pdb_lines = []
-        for i, (res, (x, y, z)) in enumerate(zip(self.sequence, self.scaled_coordinates), start=1):
-            res_3 = res_name_map.get(res.upper(), 'UNK')
-            pdb_lines.append(
-                f"ATOM  {i:5d}  CA  {res_3} {chain_id}{i:4d}    "
-                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           C"
-            )
-        pdb_lines.append("END")
-        return "\n".join(pdb_lines)
 
-    def generate_alignment_content(self, chain_id='A', sequence_name='protein_full'):
+        with open(self.ca_pdb_filename, 'w') as f:
+            for i, (res_name, (x, y, z)) in enumerate(zip(self.sequence, self.scaled_coordinates), start=1):
+                # 三字母
+                res_name_3 = res_name_map.get(res_name.upper(), 'UNK')
+                # 这里的 chain_id = self.chain_id, 残基编号从1开始
+                # 原子名称我们统一写 CA（仅Cα）
+                f.write(
+                    f"ATOM  {i:5d}  CA  {res_name_3} {self.chain_id}{i:4d}    "
+                    f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           C\n"
+                )
+            f.write("END\n")
+        print(f"PDB file '{self.ca_pdb_filename}' has been written.")
+
+    def prepare_alignment(self, sequence_name='protein_full'):
         """
-        Generate the alignment file content (as a string) for Modeller.
+        写出 alignment 文件，以用于 MODELLER 的 automodel。
+
+        思路：把仅含Cα的ca_model当模板；把目标序列命名为 protein_full。
+        让这两者在对齐文件中使用相同的氨基酸序列 (只是一字母拼起来)，加个'*'结束。
         """
         sequence_str = ''.join(self.sequence) + '*'
-        start_res = 1
-        end_res = len(self.sequence)
-        lines = []
-        # Template entry (CA model)
-        lines.append(">P1;ca_model")
-        lines.append(f"structureX:ca_model:{start_res}:{chain_id}:{end_res}:{chain_id}::::")
-        lines.append(sequence_str)
-        lines.append("")
-        # Target entry (full model)
-        lines.append(f">P1;{sequence_name}")
-        lines.append(f"sequence:{sequence_name}:{start_res}:{chain_id}:{end_res}:{chain_id}::::")
-        lines.append(sequence_str)
-        return "\n".join(lines)
+        start_residue = 1
+        end_residue = len(self.sequence)
 
-    def generate_full_model(self, chain_id='A', sequence_name='protein_full'):
+        with open(self.alignment_filename, 'w') as f:
+            # 模板（来自ca_model）
+            f.write(">P1;ca_model\n")
+            # structureX:ca_model:<start>:<chain>:<end>:<chain>::::
+            # 这里 chain 都用 self.chain_id，res编号从start_residue到end_residue
+            f.write(f"structureX:ca_model:{start_residue}:{self.chain_id}:{end_residue}:{self.chain_id}::::\n")
+            f.write(sequence_str + "\n\n")
+
+            # 目标（full model）
+            f.write(f">P1;{sequence_name}\n")
+            f.write(f"sequence:{sequence_name}:{start_residue}:{self.chain_id}:{end_residue}:{self.chain_id}::::\n")
+            f.write(sequence_str + "\n")
+
+        print(f"Alignment file '{self.alignment_filename}' has been prepared.")
+
+    def generate_full_model(self):
         """
-        Generate a full atomic model using Modeller.
-        Intermediate CA PDB and alignment files are saved as temporary files and deleted afterward.
+        用 MODELLER 的 automodel 从仅含Cα的ca_model来构建完整蛋白。
+        将结果输出到默认命名 (protein_full.B9999000x.pdb)，
+        然后复制/重命名为 self.full_model_filename。
         """
-        ca_pdb_content = self.generate_ca_pdb_content(chain_id=chain_id)
-        aln_content = self.generate_alignment_content(chain_id=chain_id, sequence_name=sequence_name)
 
-        with tempfile.NamedTemporaryFile(mode='w+', suffix='.pdb', delete=False, dir=self.output_dir) as ca_file:
-            ca_file.write(ca_pdb_content)
-            ca_file_path = ca_file.name
-
-        with tempfile.NamedTemporaryFile(mode='w+', suffix='.ali', delete=False, dir=self.output_dir) as aln_file:
-            aln_file.write(aln_content)
-            aln_file_path = aln_file.name
-
-
+        # 关闭或开启 Modeller 日志
         log.none()
         env = environ()
-        env.io.atom_files_directory = [self.output_dir]
+
+        # (可选) 如果需要载入自带的top_heav.lib等，可以：
+        # env.libs.topology.read(file='$(LIB)/top_heav.lib')
+        # env.libs.parameters.read(file='$(LIB)/par.lib')
+        #
+        # 同时如果需要让Modeller能找到ca_model.pdb, alignment等文件：
+        env.io.atom_files_directory = [self.base_dir]
+
+        # 先做对齐
         aln = alignment(env)
-        mdl = model(env, file=ca_file_path, model_segment=(f'FIRST:{chain_id}', f'LAST:{chain_id}'))
-        aln.append_model(mdl, align_codes='ca_model', atom_files=ca_file_path)
-        aln.append(file=aln_file_path, align_codes=sequence_name)
+        # 读入仅含Cα的 pdb，作为 knowns='ca_model'
+        mdl = model(env, file=self.ca_pdb_filename,
+                    model_segment=(f'FIRST:{self.chain_id}', f'LAST:{self.chain_id}'))
+        aln.append_model(mdl, align_codes='ca_model', atom_files=self.ca_pdb_filename)
+
+        # 将 alignment 文件读入(包含 'protein_full' 目标序列)
+        aln.append(file=self.alignment_filename, align_codes='protein_full')
+        # 两个序列做一次二级对齐
         aln.align2d()
 
+        # 定义 automodel 类
         class MyModel(automodel):
             def special_patches(self, aln):
-                self.rename_segments(segment_ids=[chain_id])
+                # 如果需要修饰链ID、指定环区补建等可在此处理
+                self.rename_segments(segment_ids=['A'])
 
-        a = MyModel(env, alnfile=aln_file_path, knowns='ca_model', sequence=sequence_name,
-                    assess_methods=(assess.DOPE, assess.GA341))
+        # 构建
+        a = MyModel(
+            env,
+            alnfile=self.alignment_filename,
+            knowns='ca_model',
+            sequence='protein_full',
+            assess_methods=(assess.DOPE, assess.GA341),
+        )
         a.starting_model = 1
-        a.ending_model = 1
+        a.ending_model = 1  # 只做1个模型
         a.make()
 
-        full_model_path = os.path.join(self.output_dir, f"{sequence_name}.B99990001.pdb")
-        os.remove(ca_file_path)
-        os.remove(aln_file_path)
+        # a.outputs 里存储了建模结果信息，比如最佳模型名字
+        # 形如 [{'name': 'protein_full.B99990001.pdb', 'mdl': <modeller.model.Model object at 0x...>}]
+        best_model_path = a.outputs[0]['name']
+        print("MODELLER built a model:", best_model_path)
 
-        print(f"Full model generated: {full_model_path}")
-        return full_model_path
+        # 将生成的PDB复制(或重命名)为 self.full_model_filename
+        shutil.copyfile(best_model_path, self.full_model_filename)
+        print(f"Final full model has been saved as '{self.full_model_filename}'.")
 
-    # ------------------ Docking Methods ------------------ #
-    def _is_tool_available(self, tool_name):
+    def run_pipeline(self):
         """
-        Check if a tool (e.g., obabel or vina) is available on the system.
+        可选：把所有步骤封装到一个一键执行的方法，用户只需调用 run_pipeline() 即可生成full model。
         """
-        from shutil import which
-        return which(tool_name) is not None
+        print("==== 1) Reading XYZ ====")
+        self.read_xyz()
+        print("==== 2) Adjusting scale ====")
+        self.adjust_scale()
+        print("==== 3) Writing CA PDB ====")
+        self.write_ca_pdb()
+        print("==== 4) Preparing alignment ====")
+        self.prepare_alignment(sequence_name='protein_full')
+        print("==== 5) Generating full model ====")
+        self.generate_full_model()
+        print("==== DONE ====")
 
-    def convert_mol2_to_pdbqt(self, mol2_file, pdbqt_file):
-        """
-        Convert a MOL2 file to PDBQT format using Open Babel.
-        """
-        if not self._is_tool_available("obabel"):
-            raise EnvironmentError("Open Babel is not installed or not in PATH.")
-        command = ["obabel", mol2_file, "-O", pdbqt_file, "--partialcharge", "gasteiger", "-h"]
-        subprocess.run(command, check=True)
-        print(f"Converted {mol2_file} to {pdbqt_file}.")
 
-    def calculate_ligand_center_of_mass(self, mol2_file):
-        """
-        Calculate the center of mass of the ligand from a MOL2 file.
-        """
-        atom_coords = []
-        with open(mol2_file, 'r') as file:
-            atom_section = False
-            for line in file:
-                if line.startswith('@<TRIPOS>ATOM'):
-                    atom_section = True
-                    continue
-                elif line.startswith('@<TRIPOS>') and atom_section:
-                    break
-                if atom_section:
-                    parts = line.split()
-                    if len(parts) >= 5:
-                        x, y, z = map(float, parts[2:5])
-                        atom_coords.append((x, y, z))
-        if atom_coords:
-            x_coords, y_coords, z_coords = zip(*atom_coords)
-            center_x = sum(x_coords) / len(x_coords)
-            center_y = sum(y_coords) / len(y_coords)
-            center_z = sum(z_coords) / len(z_coords)
-            print(f"Calculated ligand center of mass: X={center_x:.3f}, Y={center_y:.3f}, Z={center_z:.3f}")
-            return center_x, center_y, center_z
-        else:
-            raise ValueError("No atom coordinates found in the MOL2 file.")
 
-    def run_vina(self, receptor_pdbqt, ligand_mol2, seed=2, box_size=(18, 18, 18)):
-        """
-        Run AutoDock Vina docking.
-        Converts the ligand from MOL2 to PDBQT, calculates the center of mass, and then runs docking.
-        """
-        # Convert ligand from MOL2 to PDBQT
-        ligand_pdbqt = os.path.join(self.output_dir, "ligand.pdbqt")
-        self.convert_mol2_to_pdbqt(ligand_mol2, ligand_pdbqt)
 
-        # Calculate center of mass for the docking box from the ligand MOL2 file
-        center_x, center_y, center_z = self.calculate_ligand_center_of_mass(ligand_mol2)
 
-        # Define output files
-        output_file = os.path.join(self.output_dir, "docking_output.pdbqt")
-        log_file = os.path.join(self.output_dir, "docking_log.txt")
 
-        size_x, size_y, size_z = box_size
-        command = [
-            "vina",
-            "--receptor", receptor_pdbqt,
-            "--ligand", ligand_pdbqt,
-            "--out", output_file,
-            "--center_x", str(center_x), "--center_y", str(center_y), "--center_z", str(center_z),
-            "--size_x", str(size_x), "--size_y", str(size_y), "--size_z", str(size_z),
-            "--exhaustiveness", "16",
-            "--seed", str(seed)
-        ]
-        print("Running AutoDock Vina docking...")
-        try:
-            with open(log_file, "w") as log:
-                subprocess.run(command, stdout=log, stderr=log, check=True)
-        except subprocess.CalledProcessError as e:
-            print("Error: AutoDock Vina docking failed.")
-            print("Command:", " ".join(command))
-            print("Exit status:", e.returncode)
-            return None, None
-        print(f"Docking complete. Results saved in {output_file}")
-        return output_file, log_file
 
-    def parse_docking_results(self, log_file):
-        """
-        Parse the AutoDock Vina log file to extract docking scores.
-        """
-        scores = []
-        with open(log_file, "r") as file:
-            for line in file:
-                if "REMARK VINA RESULT:" in line:
-                    parts = line.strip().split()
-                    # Binding affinity is typically the fourth element
-                    score = float(parts[3])
-                    scores.append(score)
-        print(f"Extracted docking scores: {scores}")
-        return scores
 
-    # ------------------ MOL2 Translation Methods ------------------ #
-    def translate_mol2(self, input_mol2, output_mol2):
-        """
-        Translate the molecule in a MOL2 file so that its geometric center is at the origin.
-        """
-        atoms = []
-        # Read the MOL2 file and extract atom information
-        with open(input_mol2, 'r') as file:
-            lines = file.readlines()
 
-        atom_section = False
-        for line in lines:
-            if line.startswith("@<TRIPOS>ATOM"):
-                atom_section = True
-                continue
-            elif line.startswith("@<TRIPOS>") and atom_section:
-                break
-            if atom_section:
-                parts = line.split()
-                if len(parts) < 6:
-                    continue
-                atom_id = parts[0]
-                atom_name = parts[1]
-                try:
-                    x = float(parts[2])
-                    y = float(parts[3])
-                    z = float(parts[4])
-                except ValueError:
-                    raise ValueError(f"Invalid coordinates for atom {atom_id} in {input_mol2}.")
-                atom_type = parts[5]
-                additional = parts[6:] if len(parts) > 6 else []
-                atoms.append({
-                    'atom_id': atom_id,
-                    'atom_name': atom_name,
-                    'x': x,
-                    'y': y,
-                    'z': z,
-                    'atom_type': atom_type,
-                    'additional': additional
-                })
 
-        if not atoms:
-            raise ValueError(f"No atoms found in {input_mol2}.")
 
-        # Calculate geometric center
-        num_atoms = len(atoms)
-        center_x = sum(atom['x'] for atom in atoms) / num_atoms
-        center_y = sum(atom['y'] for atom in atoms) / num_atoms
-        center_z = sum(atom['z'] for atom in atoms) / num_atoms
-        print(f"Geometric center: X={center_x:.3f}, Y={center_y:.3f}, Z={center_z:.3f}")
 
-        # Translate atoms so that the center is at the origin
-        for atom in atoms:
-            atom['x'] -= center_x
-            atom['y'] -= center_y
-            atom['z'] -= center_z
 
-        # Write the translated MOL2 file while preserving original structure
-        with open(output_mol2, 'w') as outfile:
-            atom_section_flag = False
-            for line in lines:
-                stripped = line.strip()
-                if stripped.startswith("@<TRIPOS>ATOM"):
-                    atom_section_flag = True
-                    outfile.write(line)
-                    continue
-                elif stripped.startswith("@<TRIPOS>") and atom_section_flag:
-                    atom_section_flag = False
-                    outfile.write(line)
-                    continue
 
-                if atom_section_flag:
-                    parts = line.split()
-                    if len(parts) < 6:
-                        outfile.write(line)
-                        continue
-                    atom_id = parts[0]
-                    atom_data = next((a for a in atoms if a['atom_id'] == atom_id), None)
-                    if atom_data is None:
-                        outfile.write(line)
-                        continue
-                    new_line = f"{atom_data['atom_id']:>6} {atom_data['atom_name']:<10} {atom_data['x']:>8.3f} {atom_data['y']:>8.3f} {atom_data['z']:>8.3f} {atom_data['atom_type']}"
-                    if atom_data['additional']:
-                        new_line += " " + " ".join(atom_data['additional'])
-                    new_line += "\n"
-                    outfile.write(new_line)
-                else:
-                    outfile.write(line)
-        print(f"Translated MOL2 file saved as {output_mol2}.")
 
-    def convert_to_pdbqt(self, input_file, output_file=None):
-        """
-        Convert a PDB or MOL2 file to PDBQT format using Open Babel.
-        Automatically detects the file type from extension (or let Open Babel handle it).
-        If output_file is not provided, create one in self.output_dir.
-        """
-        if not self._is_tool_available("obabel"):
-            raise EnvironmentError("Open Babel is not installed or not in PATH.")
-
-        if output_file is None:
-            base_name = os.path.splitext(os.path.basename(input_file))[0]
-            output_file = os.path.join(self.output_dir, f"{base_name}.pdbqt")
-
-        command = [
-            "obabel", input_file,
-            "-O", output_file,
-            "--partialcharge", "gasteiger",
-            "-h"  # add hydrogens
-        ]
-        subprocess.run(command, check=True)
-        print(f"Converted {input_file} to {output_file}.")
-        return output_file
 
 
 
