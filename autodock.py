@@ -69,7 +69,6 @@ def main():
 
     print("\nAll docking processes completed!")
 
-
 if __name__ == "__main__":
     main()
 
