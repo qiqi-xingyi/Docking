@@ -2,7 +2,7 @@
 # @Time : 3/21/25 12:57 AM
 # @Author : Yuqi Zhang
 # @Email : yzhan135@kent.edu
-# @File : Docking.py
+# @File : Fileprepare.py
 
 import os
 import subprocess

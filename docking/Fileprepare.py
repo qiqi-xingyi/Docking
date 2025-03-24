@@ -2,7 +2,7 @@
 # @Time : 3/21/25 12:57 AM
 # @Author : Yuqi Zhang
 # @Email : yzhan135@kent.edu
-# @File : Docking.py
+# @File : Fileprepare.py
 
 
 import os
@@ -15,9 +15,9 @@ from modeller import alignment, model
 from Bio.PDB import PDBParser, PDBIO, MMCIFParser
 
 
-class Docking:
+class Fileprepare:
     """
-    使用MODELLER从仅含 Cα 的 XYZ 文件构建满原子 PDB，并进一步添加氢、配平电荷，
+    使用 MODELLER 从仅含 Cα 的 XYZ 文件构建满原子 PDB，并进一步添加氢、配平电荷，
     转换为 PDBQT 文件。最终的 PDBQT 文件将保存至指定文件夹中。
 
     流程：
@@ -27,7 +27,9 @@ class Docking:
       4) prepare_alignment()  : 生成用于建模的 alignment 文件
       5) generate_full_model(): 使用 automodel 构建满原子模型（完整 PDB）
       6) prepare_pdbqt()      : 添加氢原子、配平电荷并转换为 PDBQT 文件
-      7) run_pipeline()       : 一键运行上述全部步骤
+      7) prepare_ligand_pdbqt(): 对指定 MOL2 文件进行处理，平移分子中心到原点，
+                                 并转换为 PDBQT 文件（用于对接）
+      8) run_pipeline()       : 一键运行上述全部步骤（针对蛋白）
     """
 
     def __init__(self, xyz_file, docking_folder=None):
@@ -190,7 +192,6 @@ class Docking:
         """
         计算指定 PDB 文件中所有原子的中心质心。
         """
-        # 这里仅支持 PDB 格式（若为 CIF，可引入 MMCIFParser）
         parser = PDBParser(QUIET=True)
         try:
             structure = parser.get_structure('structure', structure_file)
@@ -222,7 +223,7 @@ class Docking:
         print(f"Molecule has been translated to the origin and saved as {output_file}")
 
     def _convert_to_pdbqt_with_obabel(self, input_file, output_pdbqt):
-        """使用 Open Babel 将 PDB 添加氢、配平电荷并转换为 PDBQT格式。"""
+        """使用 Open Babel 将 PDB 添加氢、配平电荷并转换为 PDBQT 格式。"""
         command = [
             "obabel", input_file, "-O", output_pdbqt,
             "--partialcharge", "gasteiger", "-h", "-xr"
@@ -259,9 +260,56 @@ class Docking:
             self.pdbqt_filename = final_pdbqt_path
             print(f"PDBQT file has been moved to {self.pdbqt_filename}")
 
+    def prepare_ligand_pdbqt(self, ligand_mol2_path, output_folder=None):
+        """
+        对指定 MOL2 格式的配体进行处理：
+          - 读取 MOL2 文件并计算几何中心，
+          - 将所有原子平移使几何中心位于原点，
+          - 调用 Open Babel 将转换后的 MOL2 文件转换为 PDBQT 文件，
+          - 并将生成的配体 PDBQT 文件保存到指定目录（默认为当前 docking_folder）。
+
+        Returns:
+        --------
+        ligand_pdbqt (str) : 生成的配体 PDBQT 文件路径
+        """
+        if output_folder is None:
+            output_folder = self.docking_folder
+
+        base_name = os.path.basename(ligand_mol2_path)
+        name_no_ext, ext = os.path.splitext(base_name)
+        # 临时生成平移后的 MOL2 文件路径
+        translated_mol2 = os.path.join(self.base_dir, f"{name_no_ext}_translated.mol2")
+        # 配体转换后的 pdbqt 文件初步存放在 base_dir
+        ligand_pdbqt = os.path.join(self.base_dir, f"{name_no_ext}.pdbqt")
+
+        # 调用 Mol2Translator 进行平移处理
+        translator = Mol2Translator(ligand_mol2_path, translated_mol2)
+        translator.prepare_translated_mol2()
+
+        # 检查 Open Babel 是否可用
+        if not self._is_tool_available("obabel"):
+            raise EnvironmentError("Open Babel is not installed or not in PATH.")
+
+        print("Converting ligand MOL2 to PDBQT using Open Babel...")
+        command = [
+            "obabel", translated_mol2, "-O", ligand_pdbqt,
+            "--partialcharge", "gasteiger", "-h", "-xr"
+        ]
+        subprocess.run(command, check=True)
+        print(f"Ligand conversion complete. Output pdbqt file: {ligand_pdbqt}")
+
+        # 如需将结果移动到 output_folder
+        if os.path.abspath(output_folder) != os.path.abspath(self.base_dir):
+            final_path = os.path.join(output_folder, os.path.basename(ligand_pdbqt))
+            shutil.move(ligand_pdbqt, final_path)
+            ligand_pdbqt = final_path
+            print(f"Ligand PDBQT file has been moved to {ligand_pdbqt}")
+
+        return ligand_pdbqt
+
     def run_pipeline(self):
         """
-        一键运行从 XYZ 到 PDBQT 的全部流程。
+        一键运行从 XYZ 到 PDBQT 的全部流程（针对蛋白）。
         """
         print("==== 1) Reading XYZ ====")
         self.read_xyz()
@@ -276,7 +324,159 @@ class Docking:
         print("==== 6) Preparing PDBQT file ====")
         self.prepare_pdbqt(translate=True)
         print("==== Pipeline DONE ====")
-        print(f"Final docking file: {self.pdbqt_filename}")
+        print(f"Final docking protein file: {self.pdbqt_filename}")
+
+
+class Mol2Translator:
+    """
+    A class to translate the geometric center of a molecule in a MOL2 file to the origin.
+    """
+
+    def __init__(self, input_mol2, output_mol2):
+        """
+        Initialize the Mol2Translator class.
+
+        Parameters:
+        - input_mol2 (str): Path to the input MOL2 file.
+        - output_mol2 (str): Path to save the translated MOL2 file.
+        """
+        self.input_mol2 = input_mol2
+        self.output_mol2 = output_mol2
+        self.atoms = []  # List to store atom information
+
+    def parse_mol2(self):
+        """
+        Parse the MOL2 file and extract atom information.
+        """
+        if not os.path.exists(self.input_mol2):
+            raise FileNotFoundError(f"The file {self.input_mol2} does not exist.")
+
+        with open(self.input_mol2, 'r') as file:
+            lines = file.readlines()
+
+        atom_section = False
+        for line in lines:
+            line = line.strip()
+            if line.startswith("@<TRIPOS>ATOM"):
+                atom_section = True
+                continue
+            elif line.startswith("@<TRIPOS>") and atom_section:
+                # End of ATOM section
+                break
+
+            if atom_section:
+                parts = line.split()
+                if len(parts) < 6:
+                    continue  # Skip malformed lines
+                atom_id = parts[0]
+                atom_name = parts[1]
+                try:
+                    x = float(parts[2])
+                    y = float(parts[3])
+                    z = float(parts[4])
+                except ValueError:
+                    raise ValueError(f"Invalid coordinates for atom {atom_id} in file {self.input_mol2}.")
+                atom_type = parts[5]
+                additional = parts[6:] if len(parts) > 6 else []
+                self.atoms.append({
+                    'atom_id': atom_id,
+                    'atom_name': atom_name,
+                    'x': x,
+                    'y': y,
+                    'z': z,
+                    'atom_type': atom_type,
+                    'additional': additional
+                })
+
+        if not self.atoms:
+            raise ValueError(f"No atoms found in the MOL2 file {self.input_mol2}.")
+
+    def calculate_geometric_center(self):
+        """
+        Calculate the geometric center of the molecule.
+
+        Returns:
+        - tuple: (center_x, center_y, center_z)
+        """
+        sum_x = sum(atom['x'] for atom in self.atoms)
+        sum_y = sum(atom['y'] for atom in self.atoms)
+        sum_z = sum(atom['z'] for atom in self.atoms)
+        num_atoms = len(self.atoms)
+
+        center_x = sum_x / num_atoms
+        center_y = sum_y / num_atoms
+        center_z = sum_z / num_atoms
+
+        print(f"Geometric center: X={center_x:.3f}, Y={center_y:.3f}, Z={center_z:.3f}")
+        return (center_x, center_y, center_z)
+
+    def translate_atoms(self, center):
+        """
+        Translate all atoms so that the geometric center is at the origin.
+
+        Parameters:
+        - center (tuple): The geometric center coordinates (center_x, center_y, center_z).
+        """
+        center_x, center_y, center_z = center
+        for atom in self.atoms:
+            atom['x'] -= center_x
+            atom['y'] -= center_y
+            atom['z'] -= center_z
+
+    def write_translated_mol2(self):
+        """
+        Write the translated atoms to a new MOL2 file, preserving the original structure.
+        """
+        with open(self.input_mol2, 'r') as file:
+            lines = file.readlines()
+
+        with open(self.output_mol2, 'w') as file:
+            atom_section = False
+            for line in lines:
+                stripped_line = line.strip()
+                if stripped_line.startswith("@<TRIPOS>ATOM"):
+                    atom_section = True
+                    file.write(line)
+                    continue
+                elif stripped_line.startswith("@<TRIPOS>") and atom_section:
+                    atom_section = False
+                    file.write(line)
+                    continue
+
+                if atom_section:
+                    parts = line.split()
+                    if len(parts) < 6:
+                        file.write(line)
+                        continue  # Write malformed lines as is
+                    atom_id = parts[0]
+                    # Find the corresponding atom in self.atoms
+                    atom = next((a for a in self.atoms if a['atom_id'] == atom_id), None)
+                    if atom is None:
+                        file.write(line)
+                        continue
+                    new_line = f"{atom['atom_id']:>6} {atom['atom_name']:<10} {atom['x']:>8.3f} {atom['y']:>8.3f} {atom['z']:>8.3f} {atom['atom_type']}"
+                    if atom['additional']:
+                        additional = ' ' + ' '.join(atom['additional'])
+                        new_line += additional
+                    new_line += '\n'
+                    file.write(new_line)
+                else:
+                    file.write(line)
+
+        print(f"Translated MOL2 file saved as {self.output_mol2}.")
+
+    def prepare_translated_mol2(self):
+        """
+        Perform the full preparation: parse, calculate geometric center, translate, and write new MOL2.
+        """
+        self.parse_mol2()
+        center = self.calculate_geometric_center()
+        self.translate_atoms(center)
+        self.write_translated_mol2()
+
+
+
+
 
 
 

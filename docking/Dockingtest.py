@@ -2,7 +2,7 @@
 # @Time : 11/10/24 3:40 PM
 # @Author : Yuqi Zhang
 # @Email : yzhan135@kent.edu
-# @File : utils.py
+# @File : Dockingtest.py
 
 import os
 import subprocess

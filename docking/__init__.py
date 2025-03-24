@@ -5,4 +5,5 @@
 # @File : __init__.py.py
 
 
-from .Docking import Docking
+from .Fileprepare import Fileprepare
+from .Dockingtest import AutoDockDocking
