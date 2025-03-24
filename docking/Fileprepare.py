@@ -57,19 +57,15 @@ class Fileprepare:
         self.full_model_filename = os.path.join(self.base_dir, f"{base_name}_full_model.pdb")
         self.pdbqt_filename = os.path.join(self.base_dir, f"{base_name}.pdbqt")
 
+        self.template_code = os.path.splitext(os.path.basename(self.ca_pdb_filename))[0]
+
         if docking_folder is None:
             self.docking_folder = self.base_dir
         else:
             self.docking_folder = docking_folder
             os.makedirs(self.docking_folder, exist_ok=True)
 
-        self.chain_id = self.xyz_file[-5]
-
-        # print("XYZ file:", self.xyz_file)
-        # print("Will write CA PDB to:", self.ca_pdb_filename)
-        # print("Will write alignment to:", self.alignment_filename)
-        # print("Will write full model to:", self.full_model_filename)
-        # print("Will write final PDBQT to:", self.pdbqt_filename)
+        self.chain_id = 'A'
 
     def read_xyz(self):
         """Read the XYZ file, extracting one-letter residue codes and Cα coordinates. Skip the first two lines."""
@@ -113,7 +109,8 @@ class Fileprepare:
 
     def write_ca_pdb(self):
         """
-        Write the scaled Cα coordinates to a PDB file containing only CA atom information for MODELLER.
+        Write the scaled Cα coordinates to a PDB file containing only CA atom information,
+        using a standard fixed-width format to ensure MODELLER can parse it.
         """
         res_name_map = {
             'A': 'ALA', 'R': 'ARG', 'N': 'ASN', 'D': 'ASP',
@@ -123,26 +120,35 @@ class Fileprepare:
             'T': 'THR', 'W': 'TRP', 'Y': 'TYR', 'V': 'VAL'
         }
         with open(self.ca_pdb_filename, 'w') as f:
+            # Optional: you可以添加HEADER或MODEL记录以增强兼容性
+            # f.write("HEADER    CA-ONLY MODEL\n")
             for i, (res_name, (x, y, z)) in enumerate(zip(self.sequence, self.scaled_coordinates), start=1):
                 res_name_3 = res_name_map.get(res_name.upper(), 'UNK')
-                f.write(f"ATOM  {i:5d}  CA  {res_name_3} {self.chain_id}{i:4d}    "
-                        f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           C\n")
+                # 使用固定宽度格式：参考PDB标准
+                line = ("{record:<6s}{serial:>5d} {name:^4s}{alt:1s}{resname:>3s} {chain:1s}"
+                        "{resseq:>4d}    {x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           {element:>2s}\n").format(
+                    record="ATOM",
+                    serial=i,
+                    name="CA",
+                    alt="",
+                    resname=res_name_3,
+                    chain=self.chain_id,
+                    resseq=i,
+                    x=x, y=y, z=z,
+                    element="C")
+                f.write(line)
             f.write("END\n")
         print(f"PDB file '{self.ca_pdb_filename}' has been written.")
 
     def prepare_alignment(self, sequence_name='protein_full'):
-        """
-        Prepare an alignment file based on the residue sequence, where the template is ca_model and the target is protein_full.
-        Note that '*' is added to the end of the sequence to terminate it.
-        """
         sequence_str = ''.join(self.sequence) + '*'
         start_residue = 1
         end_residue = len(self.sequence)
-
         with open(self.alignment_filename, 'w') as f:
-            # Template section (from ca_model)
-            f.write(">P1;ca_model\n")
-            f.write(f"structureX:ca_model:{start_residue}:{self.chain_id}:{end_residue}:{self.chain_id}::::\n")
+            # Template section (from our CA file)
+            f.write(f">P1;{self.template_code}\n")
+            f.write(
+                f"structureX:{self.template_code}:{start_residue}:{self.chain_id}:{end_residue}:{self.chain_id}::::\n")
             f.write(sequence_str + "\n\n")
             # Target section (full model)
             f.write(f">P1;{sequence_name}\n")
@@ -151,35 +157,34 @@ class Fileprepare:
         print(f"Alignment file '{self.alignment_filename}' has been prepared.")
 
     def generate_full_model(self):
-        """
-        Use MODELLER's automodel method to build a full-atom structure from the Cα-only ca_model,
-        and copy the generated PDB to full_model.pdb.
-        """
-        log.none()  # Use log.verbose() for detailed output if needed
+        log.none()
         env = environ()
         env.io.atom_files_directory = [self.base_dir]
 
-        # Read the Cα-only PDB as a template
         aln = alignment(env)
         mdl = model(env, file=self.ca_pdb_filename,
                     model_segment=(f'FIRST:{self.chain_id}', f'LAST:{self.chain_id}'))
-        aln.append_model(mdl, align_codes='ca_model', atom_files=self.ca_pdb_filename)
+        aln.append_model(mdl, align_codes=self.template_code, atom_files=self.ca_pdb_filename)
         aln.append(file=self.alignment_filename, align_codes='protein_full')
         aln.align2d()
 
-        # Define a subclass of automodel, allowing chain ID modification or other adjustments in special_patches
         class MyModel(automodel):
             def special_patches(self, aln):
                 self.rename_segments(segment_ids=['A'])
 
         a = MyModel(env,
                     alnfile=self.alignment_filename,
-                    knowns='ca_model',
+                    knowns=self.template_code,
                     sequence='protein_full',
                     assess_methods=(assess.DOPE, assess.GA341))
         a.starting_model = 1
         a.ending_model = 1
         a.make()
+
+        best_model_path = a.outputs[0]['name']
+        print("MODELLER built a model:", best_model_path)
+        shutil.copyfile(best_model_path, self.full_model_filename)
+        print(f"Final full model has been saved as '{self.full_model_filename}'.")
 
         best_model_path = a.outputs[0]['name']
         print("MODELLER built a model:", best_model_path)

@@ -5,7 +5,7 @@
 # @File : docking_file_pre.py
 
 import os
-from docking import Fileprepare  # 你的类所在模块
+from docking import Fileprepare
 
 grouped_result_dir = "grouped_result"
 selected_dir = "selected"
@@ -17,31 +17,28 @@ os.makedirs(output_ligand_dir, exist_ok=True)
 
 
 def extract_protein_id(xyz_filename):
-    base = os.path.splitext(xyz_filename)[0]  # e.g. "1fkf_top_1" 或 "1fkf"
+    base = os.path.splitext(xyz_filename)[0]
     parts = base.split('_')
-    return parts[0]  # -> "1fkf"
+    return parts[0]
 
 
 if __name__ == '__main__':
-    # 第一层：chain_5, chain_6, ...
+
     for chain_dir in os.listdir(grouped_result_dir):
         chain_path = os.path.join(grouped_result_dir, chain_dir)
         if not os.path.isdir(chain_path):
             continue
 
-        # 第二层：1fkf, 3ckz, 3eax, ...
         for protein_dir in os.listdir(chain_path):
             protein_path = os.path.join(chain_path, protein_dir)
             if not os.path.isdir(protein_path):
                 continue
 
-            # 第三层：在 protein_path 下查找 .xyz 文件
             # e.g. grouped_result/chain_5/1fkf/*.xyz
             for file_name in os.listdir(protein_path):
                 if not file_name.endswith(".xyz"):
                     continue
 
-                # 跳过与 _top_1.xyz 重复的“基本文件”
                 if "_top_" not in file_name:
                     protein_id_temp = extract_protein_id(file_name)
                     top_1_filename = f"{protein_id_temp}_top_1.xyz"
@@ -50,7 +47,7 @@ if __name__ == '__main__':
                         print(f"Skipping {file_name} because {top_1_filename} exists.")
                         continue
 
-                # 处理蛋白 (XYZ -> PDBQT)
+
                 xyz_path = os.path.join(protein_path, file_name)
                 protein_id = extract_protein_id(file_name)
 
@@ -64,7 +61,7 @@ if __name__ == '__main__':
                 )
                 docking_obj.run_pipeline()
 
-                # 处理配体 (MOL2 -> PDBQT)
+
                 ligand_dir = os.path.join(selected_dir, protein_id)
                 ligand_mol2 = os.path.join(ligand_dir, f"{protein_id}_ligand.mol2")
 
