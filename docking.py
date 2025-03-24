@@ -9,8 +9,9 @@ import os
 
 if __name__ == "__main__":
 
-    xyz_path = "3ckz.xyz"
-    recon = Docking(xyz_path)
+    xyz_path = "1fkf.xyz"  # 请修改为实际路径
+    docking_folder = "./pdbqt_protein/docking_output"  # 指定保存 PDBQT 的文件夹
+    recon = Docking(xyz_path, docking_folder=docking_folder)
     recon.run_pipeline()
 
 
