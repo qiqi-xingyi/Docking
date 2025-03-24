@@ -65,6 +65,12 @@ class Fileprepare:
 
         self.chain_id = self.xyz_file[-5]
 
+        # print("XYZ file:", self.xyz_file)
+        # print("Will write CA PDB to:", self.ca_pdb_filename)
+        # print("Will write alignment to:", self.alignment_filename)
+        # print("Will write full model to:", self.full_model_filename)
+        # print("Will write final PDBQT to:", self.pdbqt_filename)
+
     def read_xyz(self):
         """Read the XYZ file, extracting one-letter residue codes and Cα coordinates. Skip the first two lines."""
         with open(self.xyz_file, 'r') as f:
