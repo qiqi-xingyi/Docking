@@ -302,8 +302,7 @@ class Fileprepare:
         print("Converting ligand MOL2 to PDBQT using Open Babel...")
         command = [
             "obabel", translated_mol2, "-O", ligand_pdbqt,
-            "--partialcharge", "gasteiger", "-h", "-xr"
-        ]
+            "--partialcharge", "gasteiger", "-h"]
         subprocess.run(command, check=True)
         print(f"Ligand conversion complete. Output pdbqt file: {ligand_pdbqt}")
 
