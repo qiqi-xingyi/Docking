@@ -1,6 +1,5 @@
 # --*-- conding:utf-8 --*--
-# @Time : 11/10/24 3:40 PM
+# @Time : 3/24/25 2:44 AM
 # @Author : Yuqi Zhang
 # @Email : yzhan135@kent.edu
-# @File : __init__.py.py
-
+# @File : autodock.py
