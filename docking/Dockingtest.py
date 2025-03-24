@@ -9,90 +9,102 @@ import subprocess
 
 
 class AutoDockDocking:
-    def __init__(self, receptor_pdbqt, ligand_mol2, output_dir, log_file_name='docking_log.txt', seed=2):
+    def __init__(self, receptor_pdbqt, ligand_pdbqt, output_dir, log_file_name=None, seed=2):
+        """
+        Parameters:
+        -----------
+        receptor_pdbqt : str
+            Path to the receptor PDBQT file.
+        ligand_pdbqt : str
+            Path to the ligand PDBQT file (already converted).
+        output_dir : str
+            Directory to save docking results.
+        log_file_name : str, optional
+            Log file name; if not provided, a dynamic name based on receptor and ligand will be used.
+        seed : int, optional
+            Random seed for docking.
+        """
         self.receptor_pdbqt = receptor_pdbqt
-        self.ligand_mol2 = ligand_mol2
+        self.ligand_pdbqt = ligand_pdbqt
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
-        self.log_file_name = log_file_name
         self.seed = seed
 
+        # Dynamically generate a log file name if not provided.
+        if log_file_name is None:
+            receptor_base = os.path.splitext(os.path.basename(receptor_pdbqt))[0]
+            ligand_base = os.path.splitext(os.path.basename(ligand_pdbqt))[0]
+            self.log_file_name = f"{receptor_base}_{ligand_base}_docking_log.txt"
+        else:
+            self.log_file_name = log_file_name
 
     def run_docking(self):
-        """Runs docking using AutoDock Vina and outputs results."""
-        # Step 1: Convert ligand from MOL2 to PDBQT format
-        ligand_pdbqt = os.path.join(self.output_dir, "ligand.pdbqt")
-        self._convert_mol2_to_pdbqt(self.ligand_mol2, ligand_pdbqt)
+        """
+        Run docking using AutoDock Vina with dynamic output file names.
+        """
+        # Use the provided ligand PDBQT file directly.
+        # Calculate the center of mass of the ligand from its PDBQT file.
+        center_x, center_y, center_z = self.calculate_center_of_mass(self.ligand_pdbqt)
 
-        # Step 2: Calculate center of mass for the docking box
-        center_x, center_y, center_z = self.calculate_center_of_mass(self.ligand_mol2)
-
-        # Step 3: Run AutoDock Vina docking with calculated box center
-        output_file = os.path.join(self.output_dir, "docking_output_6mu3.pdbqt")
+        # Dynamically generate output file names based on receptor and ligand names.
+        receptor_base = os.path.splitext(os.path.basename(self.receptor_pdbqt))[0]
+        ligand_base = os.path.splitext(os.path.basename(self.ligand_pdbqt))[0]
+        output_file = os.path.join(self.output_dir, f"docking_output_{receptor_base}_{ligand_base}.pdbqt")
         log_file = os.path.join(self.output_dir, self.log_file_name)
 
         print("Running AutoDock Vina docking...")
-        self._run_vina(self.receptor_pdbqt, ligand_pdbqt, output_file, log_file, center_x, center_y, center_z)
+        self._run_vina(self.receptor_pdbqt, self.ligand_pdbqt, output_file, log_file,
+                       center_x, center_y, center_z)
 
         print(f"Docking complete. Results saved in {output_file}")
         return output_file, log_file
 
-    def _convert_mol2_to_pdbqt(self, mol2_file, pdbqt_file):
-        """Convert MOL2 file to PDBQT format using Open Babel."""
-        if not self._is_tool_available("obabel"):
-            raise EnvironmentError("Open Babel is not installed or not in PATH.")
-
-        command = ["obabel", mol2_file, "-O", pdbqt_file, "--partialcharge", "gasteiger", "-h"]
-        subprocess.run(command, check=True)
-        print(f"Converted {mol2_file} to PDBQT format as {pdbqt_file}.")
-
-
-    def calculate_center_of_mass(self, mol2_file):
-        """Calculate the center of mass of the ligand from a MOL2 file."""
-        atom_coordinates = []
-        with open(mol2_file, 'r') as file:
-            atom_section = False
-            for line in file:
-                # Check for the start of the ATOM section
-                if line.startswith('@<TRIPOS>ATOM'):
-                    atom_section = True
-                    continue
-                elif line.startswith('@<TRIPOS>') and atom_section:
-                    # End of ATOM section
-                    break
-
-                # Read atom coordinates in the ATOM section
-                if atom_section:
-                    parts = line.split()
-                    if len(parts) >= 5:
-                        x, y, z = map(float, parts[2:5])
-                        atom_coordinates.append((x, y, z))
-
-        # Calculate the center of mass
-        if atom_coordinates:
-            x_coords, y_coords, z_coords = zip(*atom_coordinates)
-            center_x = sum(x_coords) / len(x_coords)
-            center_y = sum(y_coords) / len(y_coords)
-            center_z = sum(z_coords) / len(z_coords)
-            print(f"Calculated center of mass: X={center_x:.3f}, Y={center_y:.3f}, Z={center_z:.3f}")
-            return center_x, center_y, center_z
-        else:
-            raise ValueError("No atom coordinates found in the MOL2 file.")
+    def calculate_center_of_mass(self, pdbqt_file):
+        """
+        Calculate the center of mass of a molecule from a PDBQT file.
+        Assumes the file uses standard PDB format for ATOM records.
+        """
+        atom_coords = []
+        with open(pdbqt_file, 'r') as f:
+            for line in f:
+                if line.startswith("ATOM") or line.startswith("HETATM"):
+                    try:
+                        # PDB coordinates are typically in columns 31-38, 39-46, 47-54
+                        x = float(line[30:38].strip())
+                        y = float(line[38:46].strip())
+                        z = float(line[46:54].strip())
+                        atom_coords.append((x, y, z))
+                    except ValueError:
+                        continue
+        if not atom_coords:
+            raise ValueError(f"No atom coordinates found in file {pdbqt_file}.")
+        xs, ys, zs = zip(*atom_coords)
+        center_x = sum(xs) / len(xs)
+        center_y = sum(ys) / len(ys)
+        center_z = sum(zs) / len(zs)
+        print(f"Calculated center of mass from {pdbqt_file}: X={center_x:.3f}, Y={center_y:.3f}, Z={center_z:.3f}")
+        return center_x, center_y, center_z
 
     def _run_vina(self, receptor_pdbqt, ligand_pdbqt, output_file, log_file, center_x, center_y, center_z):
-        """Run AutoDock Vina docking with calculated box center."""
-        size_x, size_y, size_z = 18, 18, 18  # Adjust box size as needed
+        """
+        Run AutoDock Vina docking with the specified parameters.
+        """
+        # Set docking box size dynamically (可根据需要调整)
+        size_x, size_y, size_z = 18, 18, 18
         command = [
-            "vina", "--receptor", receptor_pdbqt,
+            "vina",
+            "--receptor", receptor_pdbqt,
             "--ligand", ligand_pdbqt,
             "--out", output_file,
-            "--center_x", str(center_x), "--center_y", str(center_y), "--center_z", str(center_z),
-            "--size_x", str(size_x), "--size_y", str(size_y), "--size_z", str(size_z),
+            "--center_x", str(center_x),
+            "--center_y", str(center_y),
+            "--center_z", str(center_z),
+            "--size_x", str(size_x),
+            "--size_y", str(size_y),
+            "--size_z", str(size_z),
             "--exhaustiveness", "16",
-            "--seed",f"{self.seed}"
+            "--seed", str(self.seed)
         ]
-
-        # Run the command and capture output
         try:
             with open(log_file, "w") as log:
                 subprocess.run(command, stdout=log, stderr=log, check=True)
@@ -105,14 +117,3 @@ class AutoDockDocking:
         """Check if a tool is available on the system."""
         return subprocess.call(f"type {tool_name}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE) == 0
 
-    def parse_docking_results(self, log_file):
-        """Parse AutoDock Vina log file to extract docking scores."""
-        scores = []
-        with open(log_file, "r") as file:
-            for line in file:
-                if "REMARK VINA RESULT:" in line:
-                    parts = line.strip().split()
-                    score = float(parts[3])  # Extract score (binding affinity in kcal/mol)
-                    scores.append(score)
-        print(f"Extracted docking scores: {scores}")
-        return scores
