@@ -7,3 +7,4 @@
 
 from .Fileprepare import Fileprepare
 from .Dockingtest import AutoDockDocking
+from .Cifprepare import Cifprepare
