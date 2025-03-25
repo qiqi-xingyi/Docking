@@ -40,7 +40,6 @@ def process_all_cif_files(source_dir, target_dir):
             else:
                 print(f"Warning： {folder_name} don't have file end with '4.cif', pass.")
 
-
 if __name__ == "__main__":
 
     source_folder = "af3/result_af3_1"
