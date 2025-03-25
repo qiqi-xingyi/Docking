@@ -143,7 +143,6 @@ class Cifprepare:
             print("Translating to origin before generating PDBQT...")
             self.translate_to_origin()
 
-        # 先写一个中间的 PDB 文件，再用 obabel 转换
         self.write_pdb(self.output_pdb)
 
         if output_pdbqt is None:
@@ -157,7 +156,6 @@ class Cifprepare:
         subprocess.run(command, check=True)
         print(f"Protein PDBQT file has been generated: {output_pdbqt}")
 
-        # 如果有单独的 docking_folder，移动过去
         if os.path.abspath(self.docking_folder) != os.path.abspath(os.path.dirname(output_pdbqt)):
             final_pdbqt_path = os.path.join(self.docking_folder, os.path.basename(output_pdbqt))
             shutil.move(output_pdbqt, final_pdbqt_path)

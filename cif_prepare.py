@@ -11,8 +11,8 @@ from docking import Cifprepare
 if __name__ == "__main__":
 
     cif_file_path = "example.cif"
-    docking_dir = "docking_results"
+    output_dir = "af3_pdbqt"
 
 
-    processor = Cifprepare(cif_file_path, output_folder=docking_dir)
+    processor = Cifprepare(cif_file_path, output_folder=output_dir)
     processor.run_pipeline(translate=True)
