@@ -42,7 +42,7 @@ def process_all_cif_files(source_dir, target_dir):
 
 if __name__ == "__main__":
 
-    source_folder = "af3/result_af3_1"
+    source_folder = "af3/result_af3_2"
     target_folder = "af3_pdbqt"
 
     process_all_cif_files(source_folder, target_folder)
