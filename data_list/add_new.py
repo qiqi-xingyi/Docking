@@ -4,8 +4,6 @@
 # @Email : yzhan135@kent.edu
 # @File : add_new.py
 
-import os
-
 # Mapping dictionary from three-letter residue codes to one-letter codes.
 THREE_TO_ONE = {
     'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D',
@@ -14,7 +12,6 @@ THREE_TO_ONE = {
     'MET': 'M', 'PHE': 'F', 'PRO': 'P', 'SER': 'S',
     'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V'
 }
-
 
 def convert_three_to_one(seq):
     """
